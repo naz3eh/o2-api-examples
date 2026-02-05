@@ -39,7 +39,8 @@ async function main() {
   const executeTrades = Boolean((argv as any).executeTrades ?? (argv as any)['execute-trades']);
   const confirmMainnet = Boolean((argv as any).confirmMainnet ?? (argv as any)['confirm-mainnet']);
   const allowDestructive = Boolean((argv as any).allowDestructive ?? (argv as any)['allow-destructive']);
-  const marketsOverride = argv.markets as string | undefined;
+  // const marketsOverride = argv.markets as string | '0xfbf8e5c78071815183147bf8ed4275f43933941b792b7b6fd22f9f2810beb667';
+  const marketsOverride = "0xfbf8e5c78071815183147bf8ed4275f43933941b792b7b6fd22f9f2810beb667"
 
   ensureMainnetConfirmation(network, executeTrades, confirmMainnet);
 
@@ -62,7 +63,9 @@ async function main() {
   logSection('Market Data');
   const marketsResp = await o2.getMarkets();
   console.log(`Markets: ${marketsResp.markets.length}`);
+
   const selectedMarkets = pickMarkets(marketsResp.markets, marketsOverride);
+  console.log('Selected Market ID:', selectedMarkets[0].market_id);
 
   const summary = await o2.getSummary(selectedMarkets[0].market_id);
   console.log('Summary keys:', Object.keys(summary || {}).length);
@@ -75,7 +78,8 @@ async function main() {
   // Depth
   // ---------------------------
   logSection('Order Book Depth');
-  const depthA = await o2.getDepth('0xfbf8e5c78071815183147bf8ed4275f43933941b792b7b6fd22f9f2810beb667', '0');
+  const depthA = await o2.getDepth(selectedMarkets[0].market_id, '0');
+  console.log('selectedMarkets[0].market_id:', selectedMarkets);
   console.log('Depth A best bid:', depthA?.orders?.buys?.[0]?.price);
 
 
@@ -160,7 +164,7 @@ async function main() {
       signer,
       account: wallet,
       tradeAccountId: tradeAccountId as any,
-      contractIds: [selectedMarkets[0].contract_id, selectedMarkets[1].contract_id],
+      contractIds: [selectedMarkets[0].contract_id],
     });
 
     await manager.fetchNonce();
@@ -168,7 +172,7 @@ async function main() {
     // Always create a new session with the new signer (like api-bot does)
     // Recovery would only work if we persisted the signer's private key
     const sessionParams = await manager.api_CreateSessionParams(
-      [selectedMarkets[0].contract_id, selectedMarkets[1].contract_id],
+      [selectedMarkets[0].contract_id],
       Date.now() + sessionExpiryMs
     );
     const session = await o2.createSession(sessionParams, ownerAddress);

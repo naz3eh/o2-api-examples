@@ -8,12 +8,13 @@ export function pickMarkets(markets: MarketResponse[], override?: string): Marke
   if (override) {
     const ids = override.split(',').map((id) => id.trim());
     const selected = markets.filter((m) => ids.includes(m.market_id));
-    if (selected.length < 2) {
-      throw new Error('Provide at least two valid market IDs with --markets');
+    if (selected.length === 0) {
+      throw new Error('No valid market IDs found with --markets');
     }
-    return selected.slice(0, 2);
+    return selected;
   }
-  if (markets.length < 2) throw new Error('Need at least two markets from /v1/markets');
+  if (markets.length === 0) throw new Error('Need at least one market from /v1/markets');
+  // Return up to 2 markets if available, but at least 1
   return markets.slice(0, 2);
 }
 
