@@ -1,11 +1,9 @@
-import { readFileSync } from 'node:fs';
+// Re-export types from lib for use in signing and o2-api
+import { TradeAccount } from '../lib/types/contracts/TradeAccount';
+import { OrderBook } from '../lib/types/contracts/OrderBook';
 
-const ABI_DIR = new URL('../abis/', import.meta.url);
+export { TradeAccount, OrderBook };
 
-function loadAbi(name: string) {
-  const path = new URL(name, ABI_DIR);
-  return JSON.parse(readFileSync(path, 'utf8'));
-}
-
-export const TRADE_ACCOUNT_ABI = loadAbi('trade-account-abi.json');
-export const ORDER_BOOK_ABI = loadAbi('order-book-abi.json');
+// Export the ABI objects for backwards compatibility
+export const TRADE_ACCOUNT_ABI = (TradeAccount as any).abi;
+export const ORDER_BOOK_ABI = (OrderBook as any).abi;

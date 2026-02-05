@@ -36,9 +36,9 @@ async function main() {
     .parse();
 
   const network = argv.network as Network;
-  const executeTrades = argv['execute-trades'] as boolean;
-  const confirmMainnet = argv['confirm-mainnet'] as boolean;
-  const allowDestructive = argv['allow-destructive'] as boolean;
+  const executeTrades = Boolean((argv as any).executeTrades ?? (argv as any)['execute-trades']);
+  const confirmMainnet = Boolean((argv as any).confirmMainnet ?? (argv as any)['confirm-mainnet']);
+  const allowDestructive = Boolean((argv as any).allowDestructive ?? (argv as any)['allow-destructive']);
   const marketsOverride = argv.markets as string | undefined;
 
   ensureMainnetConfirmation(network, executeTrades, confirmMainnet);
@@ -62,32 +62,31 @@ async function main() {
   logSection('Market Data');
   const marketsResp = await o2.getMarkets();
   console.log(`Markets: ${marketsResp.markets.length}`);
+  const selectedMarkets = pickMarkets(marketsResp.markets, marketsOverride);
 
-  const summary = await o2.getSummary();
+  const summary = await o2.getSummary(selectedMarkets[0].market_id);
   console.log('Summary keys:', Object.keys(summary || {}).length);
 
-  const ticker = await o2.getTicker();
+  const ticker = await o2.getTicker(selectedMarkets[0].market_id);
   console.log('Ticker keys:', Object.keys(ticker || {}).length);
 
-  const selectedMarkets = pickMarkets(marketsResp.markets, marketsOverride);
 
   // ---------------------------
   // Depth
   // ---------------------------
   logSection('Order Book Depth');
-  const depthA = await o2.getDepth(selectedMarkets[0].market_id, '0');
-  const depthB = await o2.getDepth(selectedMarkets[1].market_id, '0');
+  const depthA = await o2.getDepth('0xfbf8e5c78071815183147bf8ed4275f43933941b792b7b6fd22f9f2810beb667', '0');
   console.log('Depth A best bid:', depthA?.orders?.buys?.[0]?.price);
-  console.log('Depth B best bid:', depthB?.orders?.buys?.[0]?.price);
+
 
   // ---------------------------
   // Trading Data
   // ---------------------------
   logSection('Trading Data');
-  const trades = await o2.getTrades(selectedMarkets[0].market_id);
+  const trades = await o2.getTrades(selectedMarkets[0].market_id, 'desc', 50);
   console.log('Trades sample count:', trades?.trades?.length ?? 0);
 
-  const bars = await o2.getBars(selectedMarkets[0].market_id, '1m', 10);
+  const bars = await o2.getBars(selectedMarkets[0].market_id, '1m', Date.now(), 10);
   console.log('Bars sample count:', bars?.bars?.length ?? 0);
 
   // ---------------------------
@@ -120,7 +119,7 @@ async function main() {
     return;
   }
 
-  const provider = await Provider.create(providerURL);
+  const provider = new Provider(providerURL);
   const wallet = Wallet.fromPrivateKey(ownerPrivateKey, provider);
   const ownerAddress = ownerAddressFromEnv || wallet.address.toB256();
 
@@ -144,6 +143,7 @@ async function main() {
   }
 
   if (tradeAccountId) {
+    console.log('Trading account id:', tradeAccountId);
     const balance = await o2.getBalance(tradeAccountId, selectedMarkets[0].quote.asset);
     console.log('Trading account balance:', balance?.trading_account_balance ?? 'n/a');
   }
@@ -165,19 +165,16 @@ async function main() {
 
     await manager.fetchNonce();
 
-    try {
-      await manager.recoverSession();
-      console.log('Recovered existing session');
-    } catch {
-      const sessionParams = await manager.api_CreateSessionParams(
-        [selectedMarkets[0].contract_id, selectedMarkets[1].contract_id],
-        Date.now() + sessionExpiryMs
-      );
-      const session = await o2.createSession(sessionParams, ownerAddress);
-      manager.setSession(session);
-      manager.incrementNonce();
-      console.log('Created new session');
-    }
+    // Always create a new session with the new signer (like api-bot does)
+    // Recovery would only work if we persisted the signer's private key
+    const sessionParams = await manager.api_CreateSessionParams(
+      [selectedMarkets[0].contract_id, selectedMarkets[1].contract_id],
+      Date.now() + sessionExpiryMs
+    );
+    const session = await o2.createSession(sessionParams, ownerAddress);
+    manager.setSession(session);
+    manager.incrementNonce();
+    console.log('Created new session');
   }
 
   // ---------------------------
@@ -190,30 +187,17 @@ async function main() {
       {
         CreateOrder: {
           side: OrderSide.Buy,
-          order_type: OrderType.Limit,
+          order_type: OrderType.Spot,
           price: pickTinyOrderPrice(depthA, OrderSide.Buy).toString(),
           quantity: selectedMarkets[0].min_order || '1',
         },
       },
     ];
 
-    const actionsB: SessionAction[] = [
-      {
-        CreateOrder: {
-          side: OrderSide.Sell,
-          order_type: OrderType.Limit,
-          price: pickTinyOrderPrice(depthB, OrderSide.Sell).toString(),
-          quantity: selectedMarkets[1].min_order || '1',
-        },
-      },
-    ];
-
     const respA = await o2.submitSessionActions(manager, ownerAddress, selectedMarkets[0], actionsA);
-    const respB = await o2.submitSessionActions(manager, ownerAddress, selectedMarkets[1], actionsB);
 
     const orderIds = [
       ...(respA?.orders?.map((o) => o.order_id) || []),
-      ...(respB?.orders?.map((o) => o.order_id) || []),
     ];
 
     console.log('Created orders:', orderIds);
@@ -236,11 +220,21 @@ async function main() {
   // Orders
   // ---------------------------
   logSection('Orders');
-  const openOrders = await o2.getOrders(selectedMarkets[0].market_id, ownerAddress);
+  const openOrders = await o2.getOrders(
+    {
+      market_id: selectedMarkets[0].market_id,
+      contract: tradeAccountId ?? undefined,
+      account: tradeAccountId ? undefined : ownerAddress,
+      direction: 'desc',
+      count: 50,
+      is_open: true,
+    },
+    ownerAddress
+  );
   console.log('Orders count:', openOrders?.orders?.length ?? 0);
 
   if (openOrders?.orders?.[0]?.order_id) {
-    const order = await o2.getOrder(openOrders.orders[0].order_id, ownerAddress);
+    const order = await o2.getOrder(selectedMarkets[0].market_id, openOrders.orders[0].order_id, ownerAddress);
     console.log('Order detail:', order?.order_id ?? 'n/a');
   }
 

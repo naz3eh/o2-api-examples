@@ -1,0 +1,1 @@
+{"version":3,"file":"orders-api.d.ts","sourceRoot":"","sources":["orders-api.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,oBAAoB,EAAE,eAAe,EAAE,gBAAgB,EAAE,iBAAiB,EAAE,MAAM,UAAU,CAAC;AAG3G,qBAAa,SAAS;IACpB,OAAO,CAAC,QAAQ,CAAC,aAAa,CAAuB;gBAEzC,aAAa,EAAE,oBAAoB;IAIlC,SAAS,CAAC,iBAAiB,EAAE,gBAAgB,GAAG,OAAO,CAAC,eAAe,CAAC,iBAAiB,CAAC,CAAC;CAYzG"}

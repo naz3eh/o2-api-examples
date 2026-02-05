@@ -13,11 +13,13 @@ import {
   hexlify,
   BigNumberCoder,
   ZeroBytes32,
+  sha256,
 } from 'fuels';
 import { toUtf8Bytes } from 'ethers';
-import { createHash } from 'node:crypto';
 
-import { TRADE_ACCOUNT_ABI } from './abis';
+
+import { TRADE_ACCOUNT_ABI, OrderBook as OrderBookContract, ORDER_BOOK_ABI } from './abis';
+import type { OrderTypeInput } from '../lib/types/contracts/OrderBook';
 import type { Identity, SessionAction, API_CreateSessionRequest, API_SessionCallContractRequest } from './types';
 import { OrderSide, OrderType } from './types';
 
@@ -44,11 +46,7 @@ class FuelSessionSigner {
   }
 }
 
-function sha256(data: Uint8Array): Uint8Array {
-  const hash = createHash('sha256');
-  hash.update(Buffer.from(data));
-  return new Uint8Array(hash.digest());
-}
+
 
 function getContract(bits: B256Address | Address) {
   return { ContractId: { bits: bits.toString() } };
@@ -112,6 +110,14 @@ function createCallToSign(
   return arrayify(finalBytes);
 }
 
+// Helper to encode Option<T>
+function getOption(args?: Uint8Array) {
+  if (args) {
+    return concat([new BigNumberCoder('u64').encode(1), args]);
+  }
+  return new BigNumberCoder('u64').encode(0);
+}
+
 function callContractToBytes(callContractArg: {
   contractId: Uint8Array;
   functionSelector: Uint8Array | string;
@@ -131,12 +137,14 @@ function callContractToBytes(callContractArg: {
     new BigNumberCoder('u64').encode(callContractArg.amount),
     arrayify(callContractArg.assetId),
     new BigNumberCoder('u64').encode(callContractArg.gas),
-    callContractArg.args
-      ? concat([
+    getOption(
+      callContractArg.args
+        ? concat([
           new BigNumberCoder('u64').encode(callContractArg.args.length),
           callContractArg.args,
         ])
-      : new BigNumberCoder('u64').encode(0),
+        : undefined
+    ),
   ]);
 }
 
@@ -185,12 +193,12 @@ function calculateAmount(side: OrderSide, price: string, quantity: string, baseD
 
 function createOrderInvokeScope(
   order: { CreateOrder: { side: OrderSide; order_type: OrderType; price: string; quantity: string } },
-  orderBook: Contract,
+  orderBook: OrderBookContract,
   orderBookConfig: { baseAssetId: B256Address; quoteAssetId: B256Address; baseDecimals: number; quoteDecimals: number },
   gasLimit: BN
 ) {
   const { side, order_type, price, quantity } = order.CreateOrder;
-  const orderTypeInput: any = (() => {
+  const orderTypeInput: OrderTypeInput = (() => {
     switch (order_type) {
       case OrderType.Spot:
         return { Spot: undefined };
@@ -202,7 +210,7 @@ function createOrderInvokeScope(
         return { PostOnly: undefined };
       case OrderType.Limit:
       default:
-        return { Limit: undefined };
+        return { Limit: [] };
     }
   })();
 
@@ -225,7 +233,7 @@ function createOrderInvokeScope(
 
 async function encodeActions(
   tradeAccountIdentity: { Address?: { bits: string }; ContractId?: { bits: string } },
-  orderBook: Contract,
+  orderBook: OrderBookContract,
   orderBookConfig: { baseAssetId: B256Address; quoteAssetId: B256Address; baseDecimals: number; quoteDecimals: number },
   actions: SessionAction[] = [],
   gasLimit: BN
@@ -355,7 +363,9 @@ export class TradeAccountManager {
       contract_ids,
       session_id: { Address: this.signer.address.toB256() },
       signature: {
-        Secp256k1: await this.account.signMessage(hexlify(bytesToSign)),
+        Secp256k1: await (this.account as any).signMessage({
+          personalSign: bytesToSign,
+        }),
       },
       expiry: bn(session.expiry.unix).toString(),
     };
@@ -396,7 +406,7 @@ export class TradeAccountManager {
 
 export async function encodeSessionActions(
   manager: TradeAccountManager,
-  orderBook: Contract,
+  orderBook: OrderBookContract,
   actions: SessionAction[],
   market: { base: { asset: string; decimals: number }; quote: { asset: string; decimals: number } }
 ) {

@@ -1,0 +1,1 @@
+{"version":3,"file":"bars-api.d.ts","sourceRoot":"","sources":["bars-api.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,oBAAoB,EAAE,eAAe,EAAE,cAAc,EAAE,eAAe,EAAE,MAAM,UAAU,CAAC;AAGvG,qBAAa,OAAO;IAClB,OAAO,CAAC,QAAQ,CAAC,aAAa,CAAuB;gBAEzC,aAAa,EAAE,oBAAoB;IAIlC,OAAO,CAAC,iBAAiB,EAAE,cAAc,GAAG,OAAO,CAAC,eAAe,CAAC,eAAe,CAAC,CAAC;CAiBnG"}

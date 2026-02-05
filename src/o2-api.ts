@@ -1,8 +1,8 @@
-import { Contract, B256Address } from 'fuels';
+import { B256Address } from 'fuels';
 
 import { createHttpClient, get, post, put } from './http';
 import { encodeSessionActions, TradeAccountManager } from './signing';
-import { ORDER_BOOK_ABI } from './abis';
+import { OrderBook } from './abis';
 import type { MarketResponse, SessionAction, SessionSubmitTransactionResponse, MarketsResponse } from './types';
 
 export function createO2Client(baseURL: string) {
@@ -11,14 +11,43 @@ export function createO2Client(baseURL: string) {
   return {
     client,
     getMarkets: () => get<MarketsResponse>(client, '/v1/markets'),
-    getSummary: () => get<any>(client, '/v1/markets/summary'),
-    getTicker: () => get<any>(client, '/v1/markets/ticker'),
+    getSummary: (market_id: string) => get<any>(client, '/v1/markets/summary', { market_id }),
+    getTicker: (market_id: string) => get<any>(client, '/v1/markets/ticker', { market_id }),
     getDepth: (market_id: string, precision = '0') => get<any>(client, '/v1/depth', { market_id, precision }),
-    getTrades: (market_id: string) => get<any>(client, '/v1/trades', { market_id }),
-    getBars: (market_id: string, interval = '1m', limit = 10) => get<any>(client, '/v1/bars', { market_id, interval, limit }),
-    getOrders: (market_id: string, ownerId?: string) => get<any>(client, '/v1/orders', { market_id }, ownerId),
-    getOrder: (order_id: string, ownerId?: string) => get<any>(client, '/v1/order', { order_id }, ownerId),
-    getAccounts: (ownerId: string) => get<any>(client, '/v1/accounts', undefined, ownerId),
+    getTrades: (market_id: string, direction: 'asc' | 'desc' = 'desc', count = 50) =>
+      get<any>(client, '/v1/trades', { market_id, direction, count }),
+    getTradesByAccount: (params: {
+      market_id: string;
+      account?: string;
+      contract?: string;
+      direction?: 'asc' | 'desc';
+      count?: number;
+      start_timestamp?: number;
+      start_trade_id?: string;
+    }) =>
+      get<any>(client, '/v1/trades_by_account', {
+        direction: 'desc',
+        count: 50,
+        ...params,
+      }),
+    getBars: (market_id: string, resolution: string, to: number, countBackOrFrom: number, useCountBack = true) =>
+      get<any>(client, '/v1/bars', useCountBack
+        ? { market_id, resolution, to, count_back: countBackOrFrom, from: to }
+        : { market_id, resolution, to, from: countBackOrFrom }),
+    getOrders: (params: {
+      market_id: string;
+      account?: string;
+      contract?: string;
+      direction?: 'asc' | 'desc';
+      count?: number;
+      is_open?: boolean;
+      start_timestamp?: number;
+      start_order_id?: string;
+    }, ownerId?: string) =>
+      get<any>(client, '/v1/orders', { direction: 'desc', count: 50, ...params }, ownerId),
+    getOrder: (market_id: string, order_id: string, ownerId?: string) =>
+      get<any>(client, '/v1/order', { market_id, order_id }, ownerId),
+    getAccounts: (ownerId: string) => get<any>(client, '/v1/accounts', { owner: ownerId }, ownerId),
     createAccount: (ownerId: string) => post<any>(client, '/v1/accounts', { identity: { Address: ownerId } }, ownerId),
     getBalance: (contract: string, asset_id: string) => get<any>(client, '/v1/balance', { contract, asset_id }),
     createSession: (params: any, ownerId: string) => put<any>(client, '/v1/session', params, ownerId),
@@ -34,7 +63,7 @@ export function createO2Client(baseURL: string) {
       actions: SessionAction[]
     ): Promise<SessionSubmitTransactionResponse | null> => {
       try {
-        const orderBook = new Contract(market.contract_id as B256Address, ORDER_BOOK_ABI as any, manager.account);
+        const orderBook = new OrderBook(market.contract_id as B256Address, manager.account);
         const encoded = await encodeSessionActions(manager, orderBook, actions, market);
 
         const payload = await manager.api_SessionCallContractsParams(encoded.invokeScopes);
@@ -66,7 +95,7 @@ export function createO2Client(baseURL: string) {
         console.error('Session actions failed:', err);
         try {
           await manager.fetchNonce();
-        } catch {}
+        } catch { }
         return null;
       }
     },

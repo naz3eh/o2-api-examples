@@ -1,0 +1,1 @@
+{"version":3,"file":"balance-api.d.ts","sourceRoot":"","sources":["balance-api.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,oBAAoB,EAAE,eAAe,EAAE,iBAAiB,EAAE,kBAAkB,EAAE,MAAM,UAAU,CAAC;AAG7G,qBAAa,UAAU;IACrB,OAAO,CAAC,QAAQ,CAAC,aAAa,CAAuB;gBAEzC,aAAa,EAAE,oBAAoB;IAIlC,UAAU,CAAC,iBAAiB,EAAE,iBAAiB,GAAG,OAAO,CAAC,eAAe,CAAC,kBAAkB,CAAC,CAAC;CAW5G"}
