@@ -1,27 +1,67 @@
 import {
-  AbstractContract,
   Account,
   Address,
   B256Address,
+  B256Coder,
   BN,
+  BigNumberCoder,
   Contract,
-  FunctionInvocationScope,
+  EnumCoder,
+  OptionCoder,
   Signer,
+  StructCoder,
+  TupleCoder,
+  VecCoder,
+  ZeroBytes32,
   arrayify,
   bn,
   concat,
   hexlify,
-  BigNumberCoder,
-  ZeroBytes32,
   sha256,
+  toUtf8Bytes
 } from 'fuels';
-import { toUtf8Bytes } from 'ethers';
 
-
-import { TRADE_ACCOUNT_ABI, OrderBook as OrderBookContract, ORDER_BOOK_ABI } from './abis';
-import type { OrderTypeInput } from '../lib/types/contracts/OrderBook';
-import type { Identity, SessionAction, API_CreateSessionRequest, API_SessionCallContractRequest } from './types';
+import { TRADE_ACCOUNT_ABI } from './abis';
+import type { API_CreateSessionRequest, Identity, SessionAction } from './types';
 import { OrderSide, OrderType } from './types';
+
+// ========== Coders ==========
+
+const U64_CODER = new BigNumberCoder('u64');
+const B256_C = new B256Coder();
+const ADDRESS_CODER = new StructCoder('Address', { bits: B256_C });
+const CONTRACT_ID_CODER = new StructCoder('ContractId', { bits: B256_C });
+const IDENTITY_CODER = new EnumCoder('Identity', {
+  Address: ADDRESS_CODER,
+  ContractId: CONTRACT_ID_CODER,
+});
+const TIME_CODER = new StructCoder('Time', { unix: U64_CODER });
+const CONTRACT_IDS_CODER = new VecCoder(CONTRACT_ID_CODER);
+const SESSION_CODER = new StructCoder('Session', {
+  session_id: IDENTITY_CODER,
+  expiry: TIME_CODER,
+  contract_ids: CONTRACT_IDS_CODER,
+});
+const SESSION_OPTION_CODER = new OptionCoder('Option<Session>', {
+  None: new TupleCoder([]),
+  Some: SESSION_CODER,
+});
+
+const ORDER_TYPE_CODER = new EnumCoder('OrderType', {
+  Limit: new TupleCoder([U64_CODER, TIME_CODER]),
+  Spot: new TupleCoder([]),
+  FillOrKill: new TupleCoder([]),
+  PostOnly: new TupleCoder([]),
+  Market: new TupleCoder([]),
+  BoundedMarket: new TupleCoder([U64_CODER, U64_CODER]),
+});
+const ORDER_ARGS_CODER = new StructCoder('OrderArgs', {
+  price: U64_CODER,
+  quantity: U64_CODER,
+  order_type: ORDER_TYPE_CODER,
+});
+
+// ========== Session Signer ==========
 
 class FuelSessionSigner {
   private signer: Signer;
@@ -39,14 +79,23 @@ class FuelSessionSigner {
     return this.signer.address;
   }
 
-  async sign(data: Uint8Array): Promise<{ Secp256k1: { bits: number[] } }> {
-    const signature = this.signer.sign(sha256(data));
-    const bytes = Array.from(arrayify(signature));
-    return { Secp256k1: { bits: bytes as any } };
+  sign(data: Uint8Array): string {
+    return this.signer.sign(sha256(data));
   }
 }
 
+// ========== Helper Functions ==========
 
+const FUEL_MESSAGE_PREFIX = '\x19Fuel Signed Message:\n';
+
+function hashPersonalMessage(message: Uint8Array): string {
+  const payload = concat([
+    toUtf8Bytes(FUEL_MESSAGE_PREFIX),
+    toUtf8Bytes(String(message.length)),
+    message,
+  ]);
+  return sha256(payload);
+}
 
 function getContract(bits: B256Address | Address) {
   return { ContractId: { bits: bits.toString() } };
@@ -54,6 +103,13 @@ function getContract(bits: B256Address | Address) {
 
 function getAddress(bits: B256Address | Address) {
   return { Address: { bits: bits.toString() } };
+}
+
+function getOption(args?: Uint8Array) {
+  if (args) {
+    return concat([U64_CODER.encode(1), args]);
+  }
+  return U64_CODER.encode(0);
 }
 
 function removeBits(data: any, convertToHex = false): any {
@@ -83,105 +139,58 @@ function identityInputToIdentity(identityInput: { Address?: { bits: string }; Co
   throw new Error('Invalid identity input');
 }
 
+function encodeFunctionSelector(name: string): Uint8Array {
+  const nameBytes = toUtf8Bytes(name);
+  return concat([U64_CODER.encode(name.length), nameBytes]);
+}
+
+/**
+ * Build the bytes to sign for a contract function call.
+ * pattern:
+ *   nonce + chainId + funcNameLen + funcName + argBytes
+ */
 function createCallToSign(
-  nonce: string | number | bigint,
-  chainId: string | number | bigint,
-  invocationScope: FunctionInvocationScope<any>
-) {
-  const callConfig = invocationScope.getCallConfig();
-  if (callConfig.func.jsonFn.inputs[0].name !== 'signature') {
-    throw new Error('createCallToSign can only be used for functions with signature as the first argument');
-  }
-  let argBytes = callConfig.func.encodeArguments(callConfig.args);
-  const [option] = new BigNumberCoder('u64').decode(argBytes.slice(0, 8), 0);
-  if (!option.eq(0)) {
-    argBytes = argBytes.slice(8 + 64);
-  } else {
-    argBytes = argBytes.slice(8);
-  }
-  const funcNameBytes = toUtf8Bytes(callConfig.func.jsonFn.name);
-  const finalBytes = concat([
-    new BigNumberCoder('u64').encode(bn(nonce.toString())),
-    new BigNumberCoder('u64').encode(bn(chainId.toString())),
-    new BigNumberCoder('u64').encode(funcNameBytes.length),
+  nonce: number,
+  chainId: number,
+  funcName: string,
+  argBytes: Uint8Array
+): Uint8Array {
+  const funcNameBytes = toUtf8Bytes(funcName);
+  return concat([
+    U64_CODER.encode(nonce),
+    U64_CODER.encode(chainId),
+    U64_CODER.encode(funcNameBytes.length),
     funcNameBytes,
     argBytes,
   ]);
-  return arrayify(finalBytes);
 }
 
-// Helper to encode Option<T>
-function getOption(args?: Uint8Array) {
-  if (args) {
-    return concat([new BigNumberCoder('u64').encode(1), args]);
-  }
-  return new BigNumberCoder('u64').encode(0);
-}
-
-function callContractToBytes(callContractArg: {
-  contractId: Uint8Array;
-  functionSelector: Uint8Array | string;
+/**
+ * Encode call contract to bytes for session signing.
+ * Uses name-based function selector (length + utf8_name).
+ */
+function callContractToBytes(params: {
+  contractId: string;
+  functionSelector: string;
   amount: BN;
-  assetId: Uint8Array;
+  assetId: string;
   gas: BN;
   args?: Uint8Array;
 }): Uint8Array {
-  const selectorBytes =
-    typeof callContractArg.functionSelector === 'string'
-      ? arrayify(callContractArg.functionSelector)
-      : callContractArg.functionSelector;
+  const selectorBytes = arrayify(params.functionSelector);
   return concat([
-    callContractArg.contractId,
-    new BigNumberCoder('u64').encode(selectorBytes.length),
+    params.contractId,
+    U64_CODER.encode(selectorBytes.length),
     selectorBytes,
-    new BigNumberCoder('u64').encode(callContractArg.amount),
-    arrayify(callContractArg.assetId),
-    new BigNumberCoder('u64').encode(callContractArg.gas),
+    U64_CODER.encode(params.amount),
+    arrayify(params.assetId),
+    U64_CODER.encode(params.gas),
     getOption(
-      callContractArg.args
-        ? concat([
-          new BigNumberCoder('u64').encode(callContractArg.args.length),
-          callContractArg.args,
-        ])
+      params.args
+        ? concat([U64_CODER.encode(params.args.length), params.args])
         : undefined
     ),
   ]);
-}
-
-function createCallContractArg(invocationScope: FunctionInvocationScope<any>, gasLimit: BN) {
-  const callConfig = invocationScope.getCallConfig();
-  const forward = callConfig?.forward || {
-    assetId: ZeroBytes32,
-    amount: bn(0),
-  };
-  const variableOutputs = callConfig.txParameters?.variableOutputs || 0;
-  const callGasLimit = gasLimit;
-  const contract = callConfig.program as AbstractContract;
-  const contractId = contract.id.toB256();
-  const selectorBytes = arrayify(callConfig.func.selectorBytes);
-  const argBytes = callConfig.func.encodeArguments(callConfig.args);
-  return {
-    contracts: [contract],
-    callContractArgBytes: callContractToBytes({
-      contractId: arrayify(contractId),
-      functionSelector: selectorBytes,
-      amount: bn(forward.amount),
-      assetId: arrayify(forward.assetId),
-      gas: bn(callGasLimit),
-      args: argBytes,
-    }),
-    callContractArg: {
-      contract_id: { bits: contractId },
-      function_selector: selectorBytes,
-      call_params: {
-        coins: bn(forward.amount),
-        asset_id: { bits: forward.assetId },
-        gas: bn(callGasLimit).toString(),
-      },
-      call_data: argBytes,
-    },
-    variableOutputs,
-  };
 }
 
 function calculateAmount(side: OrderSide, price: string, quantity: string, baseDecimals: number): BN {
@@ -191,78 +200,145 @@ function calculateAmount(side: OrderSide, price: string, quantity: string, baseD
   return bn(quantity);
 }
 
-function createOrderInvokeScope(
+/**
+ * Encode a CreateOrder action into callContractArg bytes.
+ * Uses manual ORDER_ARGS_CODER (matching working script) instead of ABI encoding.
+ */
+function encodeCreateOrderCall(
   order: { CreateOrder: { side: OrderSide; order_type: OrderType; price: string; quantity: string } },
-  orderBook: OrderBookContract,
+  orderBookContractId: string,
   orderBookConfig: { baseAssetId: B256Address; quoteAssetId: B256Address; baseDecimals: number; quoteDecimals: number },
   gasLimit: BN
 ) {
   const { side, order_type, price, quantity } = order.CreateOrder;
-  const orderTypeInput: OrderTypeInput = (() => {
+
+  const orderTypeValue = (() => {
     switch (order_type) {
-      case OrderType.Spot:
-        return { Spot: undefined };
-      case OrderType.Market:
-        return { Market: undefined };
-      case OrderType.FillOrKill:
-        return { FillOrKill: undefined };
-      case OrderType.PostOnly:
-        return { PostOnly: undefined };
-      case OrderType.Limit:
-      default:
-        return { Limit: [] };
+      case OrderType.Spot: return { Spot: [] };
+      case OrderType.Market: return { Market: [] };
+      case OrderType.FillOrKill: return { FillOrKill: [] };
+      case OrderType.PostOnly: return { PostOnly: [] };
+      default: throw new Error(`Unsupported order type: ${order_type}`);
     }
   })();
 
-  const callData = {
+  const orderArgs = {
     price: bn(price),
     quantity: bn(quantity),
-    order_type: orderTypeInput,
+    order_type: orderTypeValue,
   };
+  const argBytes = ORDER_ARGS_CODER.encode(orderArgs);
 
-  const callParams = {
-    forward: {
-      assetId: side === OrderSide.Buy ? orderBookConfig.quoteAssetId : orderBookConfig.baseAssetId,
-      amount: calculateAmount(side, price, quantity, orderBookConfig.baseDecimals),
-    },
-    gasLimit: gasLimit,
+  const forwardAmount = calculateAmount(side, price, quantity, orderBookConfig.baseDecimals);
+  const forwardAssetId = side === OrderSide.Buy ? orderBookConfig.quoteAssetId : orderBookConfig.baseAssetId;
+
+  const selectorBytes = encodeFunctionSelector('create_order');
+
+  return {
+    callContractArgBytes: callContractToBytes({
+      contractId: orderBookContractId,
+      functionSelector: hexlify(selectorBytes),
+      amount: forwardAmount,
+      assetId: forwardAssetId,
+      gas: gasLimit,
+      args: argBytes,
+    }),
+    variableOutputs: 0,
   };
-
-  return (orderBook.functions as any).create_order(callData).callParams(callParams);
 }
 
-async function encodeActions(
+/**
+ * Encode a settle_balance call into callContractArg bytes.
+ */
+function encodeSettleBalanceCall(
   tradeAccountIdentity: { Address?: { bits: string }; ContractId?: { bits: string } },
-  orderBook: OrderBookContract,
-  orderBookConfig: { baseAssetId: B256Address; quoteAssetId: B256Address; baseDecimals: number; quoteDecimals: number },
-  actions: SessionAction[] = [],
+  orderBookContractId: string,
   gasLimit: BN
 ) {
-  const invokeScopes: Array<FunctionInvocationScope<any>> = [];
+  // settle_balance takes an Identity argument
+  const argBytes = IDENTITY_CODER.encode(tradeAccountIdentity as any);
+  const selectorBytes = encodeFunctionSelector('settle_balance');
+
+  return {
+    callContractArgBytes: callContractToBytes({
+      contractId: orderBookContractId,
+      functionSelector: hexlify(selectorBytes),
+      amount: bn(0),
+      assetId: ZeroBytes32,
+      gas: gasLimit,
+      args: argBytes,
+    }),
+    variableOutputs: 0,
+  };
+}
+
+/**
+ * Encode a cancel_order call into callContractArg bytes.
+ */
+function encodeCancelOrderCall(
+  orderId: string,
+  orderBookContractId: string,
+  gasLimit: BN
+) {
+  const argBytes = B256_C.encode(orderId);
+  const selectorBytes = encodeFunctionSelector('cancel_order');
+
+  return {
+    callContractArgBytes: callContractToBytes({
+      contractId: orderBookContractId,
+      functionSelector: hexlify(selectorBytes),
+      amount: bn(0),
+      assetId: ZeroBytes32,
+      gas: gasLimit,
+      args: argBytes,
+    }),
+    variableOutputs: 0,
+  };
+}
+
+/**
+ * Encode actions into callContractArgBytes for session signing.
+ * Automatically prepends a settle_balance call when there are CreateOrder actions.
+ */
+function encodeActionsToCallBytes(
+  tradeAccountIdentity: { Address?: { bits: string }; ContractId?: { bits: string } },
+  orderBookContractId: string,
+  orderBookConfig: { baseAssetId: B256Address; quoteAssetId: B256Address; baseDecimals: number; quoteDecimals: number },
+  actions: SessionAction[],
+  gasLimit: BN
+): { callBytesArray: Uint8Array[]; actions: SessionAction[] } {
+  const callBytesArray: Uint8Array[] = [];
   const newActions: SessionAction[] = [];
 
+  // Auto-prepend settle_balance if there are CreateOrder actions
   if (actions.some((action) => 'CreateOrder' in action)) {
-    invokeScopes.push((orderBook.functions as any).settle_balance(tradeAccountIdentity));
+    const settleCall = encodeSettleBalanceCall(tradeAccountIdentity, orderBookContractId, gasLimit);
+    callBytesArray.push(settleCall.callContractArgBytes);
     newActions.push({ SettleBalance: { to: identityInputToIdentity(tradeAccountIdentity) } });
   }
 
   for (const action of actions) {
     if ('CreateOrder' in action) {
-      invokeScopes.push(createOrderInvokeScope(action, orderBook, orderBookConfig, gasLimit));
+      const call = encodeCreateOrderCall(action, orderBookContractId, orderBookConfig, gasLimit);
+      callBytesArray.push(call.callContractArgBytes);
       newActions.push(action);
     } else if ('CancelOrder' in action) {
-      invokeScopes.push((orderBook.functions as any).cancel_order(action.CancelOrder.order_id));
+      const call = encodeCancelOrderCall(action.CancelOrder.order_id, orderBookContractId, gasLimit);
+      callBytesArray.push(call.callContractArgBytes);
       newActions.push(action);
     } else if ('SettleBalance' in action) {
-      invokeScopes.push((orderBook.functions as any).settle_balance(tradeAccountIdentity));
+      const settleCall = encodeSettleBalanceCall(tradeAccountIdentity, orderBookContractId, gasLimit);
+      callBytesArray.push(settleCall.callContractArgBytes);
       newActions.push({ SettleBalance: { to: identityInputToIdentity(tradeAccountIdentity) } });
     } else {
       throw new Error(`Unsupported action type: ${JSON.stringify(action)}`);
     }
   }
 
-  return { invokeScopes, actions: newActions };
+  return { callBytesArray, actions: newActions };
 }
+
+// ========== TradeAccountManager ==========
 
 export class TradeAccountManager {
   readonly account: Account;
@@ -331,16 +407,10 @@ export class TradeAccountManager {
     this.session = session;
   }
 
-  async signBytesWithSession(bytes: Uint8Array, length?: number) {
-    const byteToSign = [new BigNumberCoder('u64').encode(this.nonce)];
-    if (length) {
-      byteToSign.push(new BigNumberCoder('u64').encode(length));
-    }
-    byteToSign.push(bytes);
-    const payload = concat(byteToSign);
-    return this.signer.sign(payload);
-  }
-
+  /**
+   * Create session params for PUT /v1/session.
+   * Uses manual SESSION_OPTION_CODER + hashPersonalMessage + direct Signer.sign
+   */
   async api_CreateSessionParams(contract_ids: string[], expiry: string | number | bigint): Promise<API_CreateSessionRequest> {
     if (!contract_ids || contract_ids.length === 0) {
       throw new Error('session must specify at least one allowed contract');
@@ -351,76 +421,98 @@ export class TradeAccountManager {
       expiry: { unix: bn(expiry.toString()) },
       contract_ids: contract_ids.map((id) => ({ bits: id })),
     };
+
     const chainId = await this.account.provider.getChainId();
-    const bytesToSign = await createCallToSign(
-      this.nonce.toString(),
+
+    // Manual encoding
+    const sessionArgBytes = SESSION_OPTION_CODER.encode(session);
+    const bytesToSign = createCallToSign(
+      this.nonce.toNumber(),
       chainId,
-      (this.contract.functions as any).set_session(undefined, session)
+      'set_session',
+      sessionArgBytes
     );
+
+    // Personal sign: hash with prefix, then sign with owner's Signer
+    const messageHash = hashPersonalMessage(bytesToSign);
+    const ownerSigner = new Signer((this.account as any).privateKey);
+    const signature = ownerSigner.sign(messageHash);
+
     return {
       nonce: this.nonce.toString(),
       contract_id: this.contract.id.toB256(),
       contract_ids,
       session_id: { Address: this.signer.address.toB256() },
-      signature: {
-        Secp256k1: await (this.account as any).signMessage({
-          personalSign: bytesToSign,
-        }),
-      },
+      signature: { Secp256k1: signature },
       expiry: bn(session.expiry.unix).toString(),
     };
   }
 
+  /**
+   * Create params for POST /v1/session/actions.
+   * Signs the call bytes with the session signer (sha256 + sign).
+   */
   async api_SessionCallContractsParams(
-    invocationScopes: Array<FunctionInvocationScope<any>>
-  ): Promise<API_SessionCallContractRequest> {
+    orderBookContractId: string,
+    orderBookConfig: { baseAssetId: B256Address; quoteAssetId: B256Address; baseDecimals: number; quoteDecimals: number },
+    actions: SessionAction[]
+  ): Promise<{
+    nonce: string;
+    session_id: { Address: string };
+    trade_account_id: string;
+    signature: { Secp256k1: string };
+    variable_outputs: number;
+    actions: SessionAction[];
+  }> {
     if (!this.session) throw new Error('Session not initialized');
 
-    const callContracts = invocationScopes.map((call) => createCallContractArg(call, this.defaultGasLimit));
-    const bytesToSign = concat(callContracts.map((call) => call.callContractArgBytes));
-    const signature = await this.signBytesWithSession(bytesToSign, callContracts.length);
+    const tradeAccountIdentity = this.identity;
+    const encoded = encodeActionsToCallBytes(
+      tradeAccountIdentity,
+      orderBookContractId,
+      orderBookConfig,
+      actions,
+      this.defaultGasLimit
+    );
 
-    const calls = callContracts.map(({ callContractArg }) => ({
-      contract_id: removeBits(callContractArg.contract_id),
-      function_selector: hexlify(callContractArg.function_selector),
-      call_params: {
-        coins: callContractArg.call_params.coins.toString(),
-        asset_id: removeBits(callContractArg.call_params.asset_id),
-        gas: callContractArg.call_params.gas.toString(),
-      },
-      call_data: callContractArg.call_data ? hexlify(callContractArg.call_data) : undefined,
-    }));
-
-    const variableOutputs = callContracts.reduce((acc, call) => acc + (call.variableOutputs || 0), 0);
+    // Sign: nonce + numCalls + concat(callBytes)
+    const numCalls = encoded.callBytesArray.length;
+    const allCallBytes = concat(encoded.callBytesArray);
+    const sessionBytesToSign = concat([
+      U64_CODER.encode(this.nonce),
+      U64_CODER.encode(numCalls),
+      allCallBytes,
+    ]);
+    const signature = this.signer.sign(sessionBytesToSign);
 
     return {
       nonce: this.nonce.toString(),
-      session_id: removeBits(this.signerIdentity),
+      session_id: { Address: this.signer.address.toB256() },
       trade_account_id: this.contractId.toB256(),
-      signature: removeBits(signature, true),
-      calls,
-      variable_outputs: variableOutputs,
+      signature: { Secp256k1: signature },
+      variable_outputs: 0,
+      actions: encoded.actions,
     };
   }
 }
 
+// ========== Exports ==========
+
 export async function encodeSessionActions(
   manager: TradeAccountManager,
-  orderBook: OrderBookContract,
+  orderBookContractId: string,
   actions: SessionAction[],
   market: { base: { asset: string; decimals: number }; quote: { asset: string; decimals: number } }
 ) {
-  return encodeActions(
-    manager.identity,
-    orderBook,
+  return manager.api_SessionCallContractsParams(
+    orderBookContractId,
     {
       baseAssetId: market.base.asset as B256Address,
       quoteAssetId: market.quote.asset as B256Address,
       baseDecimals: market.base.decimals,
       quoteDecimals: market.quote.decimals,
     },
-    actions,
-    manager.defaultGasLimit
+    actions
   );
 }
 

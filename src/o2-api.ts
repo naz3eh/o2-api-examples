@@ -1,8 +1,5 @@
-import { B256Address } from 'fuels';
-
 import { createHttpClient, get, post, put } from './http';
 import { encodeSessionActions, TradeAccountManager } from './signing';
-import { OrderBook } from './abis';
 import type { MarketResponse, SessionAction, SessionSubmitTransactionResponse, MarketsResponse } from './types';
 
 export function createO2Client(baseURL: string) {
@@ -63,10 +60,8 @@ export function createO2Client(baseURL: string) {
       actions: SessionAction[]
     ): Promise<SessionSubmitTransactionResponse | null> => {
       try {
-        const orderBook = new OrderBook(market.contract_id as B256Address, manager.account);
-        const encoded = await encodeSessionActions(manager, orderBook, actions, market);
-
-        const payload = await manager.api_SessionCallContractsParams(encoded.invokeScopes);
+        // encodeSessionActions now returns the full signed payload directly
+        const payload = await encodeSessionActions(manager, market.contract_id, actions, market);
 
         const response = await post<SessionSubmitTransactionResponse>(
           client,
@@ -75,7 +70,7 @@ export function createO2Client(baseURL: string) {
             actions: [
               {
                 market_id: market.market_id,
-                actions: encoded.actions,
+                actions: payload.actions,
               },
             ],
             signature: payload.signature,
@@ -83,16 +78,15 @@ export function createO2Client(baseURL: string) {
             trade_account_id: payload.trade_account_id,
             session_id: payload.session_id,
             variable_outputs: payload.variable_outputs,
-            min_gas_limit: payload.min_gas_limit,
-            collect_orders: true,
+            collect_orders: false,
           },
           ownerId
         );
 
         manager.incrementNonce();
         return response;
-      } catch (err) {
-        console.error('Session actions failed:', err);
+      } catch (err: any) {
+        console.error('Session actions failed:', err?.response?.data || err?.message || err);
         try {
           await manager.fetchNonce();
         } catch { }

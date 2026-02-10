@@ -169,8 +169,7 @@ async function main() {
 
     await manager.fetchNonce();
 
-    // Always create a new session with the new signer (like api-bot does)
-    // Recovery would only work if we persisted the signer's private key
+    // creating a new session with the new signer 
     const sessionParams = await manager.api_CreateSessionParams(
       [selectedMarkets[0].contract_id],
       Date.now() + sessionExpiryMs
@@ -184,6 +183,10 @@ async function main() {
   // ---------------------------
   // Order Management & Trading
   // ---------------------------
+  const price = BigInt(5000000000); // 5.0 USDC in 9 decimals 
+  const quantity = BigInt(1000000000); // 1.0 ETH in 9 decimals 
+
+
   if (executeTrades && manager && tradeAccountId) {
     logSection('Trading (Create + Cancel)');
 
@@ -192,13 +195,14 @@ async function main() {
         CreateOrder: {
           side: OrderSide.Buy,
           order_type: OrderType.Spot,
-          price: pickTinyOrderPrice(depthA, OrderSide.Buy).toString(),
-          quantity: selectedMarkets[0].min_order || '1',
+          price: price.toString(),
+          quantity: quantity.toString(),
         },
       },
     ];
 
     const respA = await o2.submitSessionActions(manager, ownerAddress, selectedMarkets[0], actionsA);
+    console.log('submitSessionActions response:', JSON.stringify(respA));
 
     const orderIds = [
       ...(respA?.orders?.map((o) => o.order_id) || []),
@@ -239,7 +243,7 @@ async function main() {
 
   if (openOrders?.orders?.[0]?.order_id) {
     const order = await o2.getOrder(selectedMarkets[0].market_id, openOrders.orders[0].order_id, ownerAddress);
-    console.log('Order detail:', order?.order_id ?? 'n/a');
+    console.log('Order detail:', JSON.stringify(order));
   }
 
   // ---------------------------
@@ -251,6 +255,7 @@ async function main() {
   } else if (!tradeAccountId) {
     console.log('No trade account id; cannot run account ops.');
   } else {
+    // TODO: implement account operations
     console.log('Account ops are enabled. Add real params before use.');
   }
 
