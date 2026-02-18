@@ -140,6 +140,6 @@ pnpm dev -- --network testnet
 
 ## Docs
 
-- WebSocket subscriptions: `docs/websocket.md`
+- WebSocket subscriptions: [O2 Docs — WebSocket Connection](https://docs.o2.app/api-endpoints/system-endpoints.html#websocket-connection)
 - Session keys guide: [O2 Docs — Session Keys](https://docs.o2.app/api-endpoints/session-keys)
-- Contract ABIs (vendored from `o2-exchange/contracts`): `abis/`
+- Contract ABIs (vendored from [o2-exchange/contracts](https://github.com/o2-exchange/contracts)): `abis/`
