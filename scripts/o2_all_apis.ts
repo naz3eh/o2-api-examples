@@ -190,6 +190,7 @@ async function main() {
   if (executeTrades && manager && tradeAccountId) {
     logSection('Trading (Create + Cancel)');
 
+    // -- Create Order --
     const actionsA: SessionAction[] = [
       {
         CreateOrder: {
@@ -201,23 +202,48 @@ async function main() {
       },
     ];
 
-    const respA = await o2.submitSessionActions(manager, ownerAddress, selectedMarkets[0], actionsA);
-    console.log('submitSessionActions response:', JSON.stringify(respA));
+    const createResp = await o2.submitSessionActions(manager, ownerAddress, selectedMarkets[0], actionsA);
+    console.log('Create order response:', JSON.stringify(createResp));
 
-    const orderIds = [
-      ...(respA?.orders?.map((o) => o.order_id) || []),
-    ];
+    if (createResp?.tx_id) {
+      console.log('Order submitted, tx_id:', createResp.tx_id);
 
-    console.log('Created orders:', orderIds);
+      // Wait for on-chain state to propagate
+      console.log('Waiting for on-chain state to propagate (3s)...');
+      await new Promise((resolve) => setTimeout(resolve, 3000));
 
-    if (orderIds.length > 0) {
-      const cancelActions: SessionAction[] = orderIds.map((id) => ({
-        CancelOrder: { order_id: id as `0x${string}` },
-      }));
+      // Query open orders to get the order_id
+      const openOrders = await o2.getOrders(
+        {
+          market_id: selectedMarkets[0].market_id,
+          contract: tradeAccountId,
+          is_open: true,
+          count: 5,
+          direction: 'desc',
+        },
+        ownerAddress
+      );
 
-      // Cancel only first 5 (max actions per tx)
-      await o2.submitSessionActions(manager, ownerAddress, selectedMarkets[0], cancelActions.slice(0, 5));
-      console.log('Canceled orders');
+      const orderIds = openOrders?.orders?.map((o: any) => o.order_id) || [];
+      console.log('Open order IDs:', orderIds);
+
+      // -- Cancel Orders --
+      if (orderIds.length > 0) {
+        const cancelActions: SessionAction[] = orderIds.map((id: string) => ({
+          CancelOrder: { order_id: (id.startsWith('0x') ? id : `0x${id}`) as `0x${string}` },
+        }));
+
+        // Cancel up to 5 orders (max actions per tx)
+        const cancelResp = await o2.submitSessionActions(
+          manager, ownerAddress, selectedMarkets[0], cancelActions.slice(0, 5)
+        );
+        console.log('Cancel response:', JSON.stringify(cancelResp));
+        console.log('Canceled', Math.min(orderIds.length, 5), 'order(s)');
+      } else {
+        console.log('No open orders to cancel');
+      }
+    } else {
+      console.log('Order submission failed, no tx_id returned');
     }
   } else {
     logSection('Trading');
