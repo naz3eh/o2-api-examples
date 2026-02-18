@@ -21,7 +21,7 @@ graph TD
   Entry --> Api
   Entry --> Signing
   Api --> Http
-  Api --> Abis
+  Api --> Signing
   Signing --> Abis
   Signing --> Types
 ```
@@ -38,6 +38,7 @@ pnpm install
 
 ```bash
 cp .env.example .env
+# Set O2_OWNER_PRIVATE_KEY in .env
 ```
 
 3. Run (read-only)
@@ -46,17 +47,40 @@ cp .env.example .env
 pnpm dev
 ```
 
-4. Run with trading on mainnet (tiny orders + cancel)
+4. Run with trading on mainnet (create order + cancel)
 
 ```bash
 pnpm dev -- --execute-trades --confirm-mainnet
 ```
 
-5. Allow account ops (withdraw/upgrade/call)
+5. Allow account creation and destructive ops
 
 ```bash
 pnpm dev -- --allow-destructive --confirm-mainnet
 ```
+
+## What the Script Does
+
+| Section | Endpoints | Requires |
+|---------|-----------|----------|
+| Market Data | `GET /v1/markets`, `/v1/markets/summary`, `/v1/markets/ticker` | — |
+| Order Book Depth | `GET /v1/depth` | — |
+| Trading Data | `GET /v1/trades`, `/v1/bars` | — |
+| Aggregator | `GET /v1/aggregated/*` | — |
+| Account & Balance | `GET /v1/accounts`, `POST /v1/accounts`, `GET /v1/balance` | `O2_OWNER_PRIVATE_KEY` |
+| Session Creation | `PUT /v1/session` | `O2_OWNER_PRIVATE_KEY` |
+| Trading (Create + Cancel) | `POST /v1/session/actions`, `GET /v1/orders` | `--execute-trades --confirm-mainnet` |
+| Orders | `GET /v1/orders`, `GET /v1/order` | `O2_OWNER_PRIVATE_KEY` |
+
+### Trading Flow
+
+When `--execute-trades` is set, the script:
+
+1. **Creates a session** — generates a session keypair, signs with the owner key, and registers via `PUT /v1/session`
+2. **Places a buy order** — a low-price Spot buy order (5 USDC × 1.0 ETH) via `POST /v1/session/actions`
+3. **Waits for propagation** — 3-second delay for on-chain state to settle
+4. **Queries open orders** — fetches the order ID via `GET /v1/orders`
+5. **Cancels the order** — submits a `CancelOrder` action via `POST /v1/session/actions`
 
 ## Testing the API Calls
 
@@ -76,15 +100,15 @@ Set `O2_OWNER_PRIVATE_KEY` in `.env`, then run:
 pnpm dev
 ```
 
-Expected: account lookup/session creation attempts run, but no orders are placed.
+Expected: account lookup and session creation run, but no orders are placed.
 
-### 3) Full trading flow (tiny orders + cancel)
+### 3) Full trading flow (create order + cancel)
 
 ```bash
 pnpm dev -- --execute-trades --confirm-mainnet
 ```
 
-Expected: tiny orders placed in two markets and immediately canceled.
+Expected: a low-price order is placed on the selected market and immediately canceled.
 
 ### 4) Target specific markets
 
@@ -106,11 +130,16 @@ pnpm dev -- --network testnet
 
 ## Safety Flags
 
-- `--execute-trades` places and cancels tiny orders in two markets.
-- `--confirm-mainnet` is required when trading on mainnet.
-- `--allow-destructive` is required to run `/withdraw`, `/upgrade`, and `/call` endpoints.
+| Flag | Effect |
+|------|--------|
+| `--execute-trades` | Places and cancels orders on the selected market |
+| `--confirm-mainnet` | Required when trading on mainnet (safety gate) |
+| `--allow-destructive` | Required to create a trade account or run `/withdraw`, `/upgrade`, `/call` endpoints |
+| `--network testnet` | Run against testnet instead of mainnet |
+| `--markets 0x...` | Override which market(s) to use |
 
 ## Docs
 
 - WebSocket subscriptions: `docs/websocket.md`
+- Session keys guide: [O2 Docs — Session Keys](https://docs.o2.app/api-endpoints/session-keys)
 - Contract ABIs (vendored from `o2-exchange/contracts`): `abis/`
